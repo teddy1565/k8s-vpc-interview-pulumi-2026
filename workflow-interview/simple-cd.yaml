@@ -1,0 +1,127 @@
+name: AWS ECR push
+
+on:
+  push:
+    tags: [ "v*" ]
+
+jobs:
+  build_frontend:
+    name: Build Angular Frontend
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Get Frontend Repo
+      uses: actions/checkout@v4
+      with:
+        ssh-key: ${{ secrets.FRONTEND_REPO_DEPLOY_KEY }}
+        repository: company/frontend
+
+    - name: setup node
+      uses: actions/setup-node@v2
+      with:
+        node-version: '18.x'
+
+    - name: install depends
+      run: npm install
+
+    - name: Build
+      run: npm run build
+
+    - name: Classification
+      run: |
+        mkdir angular-frontend-assets
+        mkdir angular-frontend-views
+        cd dist/frontend/
+        cp -rf `ls | grep -v 'index.html\|favicon.ico'` ../../angular-frontend-assets/
+        cd ../../
+        cp -rf dist/frontend/index.html ./angular-frontend-views/
+
+    - name: Upload Assets
+      uses: actions/upload-artifact@v2
+      with:
+        name: assets
+        path: angular-frontend-assets
+
+    - name: Upload Views
+      uses: actions/upload-artifact@v2
+      with:
+        name: views
+        path: angular-frontend-views
+
+  push_ecr_public:
+    name: ECR public action
+    runs-on: ubuntu-latest
+    needs: [build_frontend]
+    steps:
+
+    - name: Get Repo Name
+      id: repoName
+      run: echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+    - name: Get Short Sha
+      id: sha
+      run: echo "::set-output name=sha7::$(echo ${GITHUB_SHA} | cut -c1-7)"
+
+    - name: checkout
+      uses: actions/checkout@v2
+
+    - name: Create Directories
+      run: |
+        mkdir angular-frontend-assets
+        mkdir angular-frontend-views
+
+    - name: Get frontend assets depends
+      uses: actions/download-artifact@v2
+      with:
+        name: assets
+        path: angular-frontend-assets
+
+    - name: Get frontend views depends
+      uses: actions/download-artifact@v2
+      with:
+        name: views
+        path: angular-frontend-views
+
+    - name: Move frontend assets
+      run: |
+        cp -rf angular-frontend-assets/* ./public/
+        rm -rf angular-frontend-assets
+
+    - name: Move frontend views
+      run: |
+        cp -rf angular-frontend-views/* ./views/
+        rm -rf angular-frontend-views
+
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v4
+      with:
+        images: ${{ steps.repoName.outputs.image }}
+
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Login to AWS ECR Public
+      id: login-ecr-public
+      uses: aws-actions/amazon-ecr-login@v1
+      with:
+        registry-type: public
+
+    - name: Build, tag, and push docker image to Amazon ECR Public
+      env:
+        REGISTRY: ${{ steps.login-ecr-public.outputs.registry }}
+        REGISTRY_ALIAS: infra
+        REPOSITORY: web-application
+        IMAGE_TAG: ${{ env.DOCKER_METADATA_OUTPUT_VERSION }}
+      run: |
+        docker build -t $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:$IMAGE_TAG .
+        docker build -t $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:latest .
+        docker build -t $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:stable .
+        docker push $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:$IMAGE_TAG
+        docker push $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:latest
+        docker push $REGISTRY/$REGISTRY_ALIAS/$REPOSITORY:stable

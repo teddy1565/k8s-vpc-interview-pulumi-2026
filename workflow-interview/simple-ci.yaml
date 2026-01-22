@@ -1,0 +1,82 @@
+name: CI - PR Check & Integration Test
+
+on:
+  pull_request:
+    branches: [ "main", "master", "develop" ]
+  push:
+    branches: [ "main", "master", "develop" ]
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  verify_frontend:
+    name: Verify Angular Frontend
+    runs-on: ubuntu-latest
+    steps:
+    - name: Get Frontend Repo
+      uses: actions/checkout@v4
+      with:
+        ssh-key: ${{ secrets.FRONTEND_REPO_DEPLOY_KEY }}
+        repository: company/frontend
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18.x'
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm ci
+
+    - name: Lint Check
+      run: npm run lint
+      continue-on-error: false
+
+    - name: Unit Tests
+      run: npm run test -- --no-watch --no-progress --browsers=ChromeHeadless
+
+    - name: Build Production
+      run: npm run build
+
+
+    - name: Classification
+      run: |
+        mkdir angular-frontend-assets
+        mkdir angular-frontend-views
+        cd dist/frontend/
+        cp -rf `ls | grep -v 'index.html\|favicon.ico'` ../../angular-frontend-assets/
+        cd ../../
+        cp -rf dist/frontend/index.html ./angular-frontend-views/
+
+    - name: Upload Assets for Docker Check
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-build-artifacts
+        path: |
+          angular-frontend-assets
+          angular-frontend-views
+        retention-days: 1
+
+  verify_docker_build:
+    name: Verify Docker Build
+    runs-on: ubuntu-latest
+    needs: [verify_frontend]
+    steps:
+    - name: Checkout Backend Repo
+      uses: actions/checkout@v4
+
+    - name: Download Frontend Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: frontend-build-artifacts
+
+    - name: Restore Frontend Files
+      run: |
+        mkdir -p ./public ./views
+        cp -rf angular-frontend-assets/* ./public/
+        cp -rf angular-frontend-views/* ./views/
+
+    - name: Test Docker Build
+      run: |
+        docker build . --file Dockerfile --tag test-build:${{ github.sha }}
+
